@@ -31,7 +31,13 @@ fabric.channel-name=
 fabric.contract-name=dac
 fabric.peer-endpoint=localhost:7051
 fabric.override-auth=peer0.org1.example.com
+
+# Base path to fabric-network/test-network/organizations
+# Example: /home/{user}/fabric-network/test-network/organizations
 fabric.crypto-path=
+
+# Full path to peer0.org1 TLS ca.crt
+# Example: /home/{user}/fabric-network/test-network/organizations/peerOrganizations/org1.example.com/peers/peer0.org1.example.com/tls/ca.crt
 fabric.tls-cert-path=
 
 # OpenAPI / Swagger
