@@ -1,0 +1,65 @@
+# Server Configuration
+server.port=8080
+server.servlet.context-path=/
+
+# Application Name
+spring.application.name=dac-hospital-backend
+
+# Microsoft SQL Server Configuration (dac_morbis)
+spring.datasource.url=jdbc:sqlserver://localhost:1433;databaseName=dac_morbis;encrypt=true;trustServerCertificate=true;sendStringParametersAsUnicode=true
+spring.datasource.username=sa
+spring.datasource.password=
+spring.datasource.driver-class-name=com.microsoft.sqlserver.jdbc.SQLServerDriver
+spring.datasource.hikari.maximum-pool-size=10
+spring.datasource.hikari.minimum-idle=2
+spring.datasource.hikari.connection-timeout=30000
+
+# JPA / Hibernate
+spring.jpa.database-platform=org.hibernate.dialect.SQLServerDialect
+spring.jpa.hibernate.ddl-auto=update
+spring.jpa.show-sql=false
+spring.jpa.open-in-view=false
+
+# JWT Secret & Expiration
+app.jwt.secret=
+app.jwt.expiration-ms=86400000
+
+# Hyperledger Fabric Gateway Configuration
+fabric.enabled=true
+fabric.msp-id=Org1MSP
+fabric.channel-name=
+fabric.contract-name=dac
+fabric.peer-endpoint=localhost:7051
+fabric.override-auth=peer0.org1.example.com
+
+# Base path to fabric-network/test-network/organizations
+# Example: /home/user/fabric-network/test-network/organizations
+fabric.crypto-path=
+
+# Full path to peer0.org1 TLS ca.crt
+# Example: /home/user/fabric-network/test-network/organizations/peerOrganizations/org1.example.com/peers/peer0.org1.example.com/tls/ca.crt
+fabric.tls-cert-path=
+
+# OpenAPI / Swagger
+springdoc.api-docs.path=/v3/api-docs
+springdoc.swagger-ui.path=/swagger-ui.html
+springdoc.swagger-ui.operationsSorter=method
+
+# Logging Configuration
+logging.level.root=INFO
+logging.level.com.example.backend=DEBUG
+logging.level.org.springframework.security=INFO
+
+# Log File Path
+logging.file.name=logs/app.log
+
+# Log Format with brackets [...]
+logging.pattern.console=[%d{yyyy-MM-dd HH:mm:ss.SSS}] [%thread] [%-5level] [%logger{36}] - %msg%n
+logging.pattern.file=[%d{yyyy-MM-dd HH:mm:ss.SSS}] [%thread] [%-5level] [%logger{36}] - %msg%n
+
+# Rolling Policy: Max 5MB per file, Max 4 files total (1 active + 3 history archives)
+logging.logback.rollingpolicy.max-file-size=5MB
+logging.logback.rollingpolicy.max-history=3
+logging.logback.rollingpolicy.file-name-pattern=logs/app-%d{yyyy-MM-dd}.%i.log
+logging.logback.rollingpolicy.total-size-cap=20MB
+
