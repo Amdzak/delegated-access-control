@@ -177,4 +177,17 @@ public class DelegationController {
             throw ex;
         }
     }
+
+    @GetMapping("/network-status")
+    @Operation(summary = "Hyperledger Fabric Network Status", description = "Query realtime gRPC connectivity state of Fabric Peer")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> getNetworkStatus() {
+        log.debug("[FABRIC_NETWORK_STATUS_CONTROLLER]: Querying realtime gRPC connectivity state");
+        try {
+            Map<String, Object> status = fabricGatewayService.getNetworkStatus();
+            return ResponseEntity.ok(ApiResponse.ok("Fabric network status evaluated successfully", status));
+        } catch (Exception ex) {
+            log.error("[FABRIC_NETWORK_STATUS_CONTROLLER]: FAILED - Error inspecting network status: {}", ex.getMessage(), ex);
+            throw ex;
+        }
+    }
 }

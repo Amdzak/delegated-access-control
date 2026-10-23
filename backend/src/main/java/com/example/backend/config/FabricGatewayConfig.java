@@ -44,12 +44,39 @@ public class FabricGatewayConfig {
     private String tlsCertPath;
 
     @Bean
-    public Gateway fabricGateway() {
-        log.debug("[FABRIC_GATEWAY_CONFIG]: DEBUG - Initializing Fabric Gateway connection to Peer '{}'", peerEndpoint);
+    public ManagedChannel fabricChannel() {
+        log.debug("[FABRIC_CHANNEL_CONFIG]: Initializing gRPC ManagedChannel to Peer '{}'", peerEndpoint);
+        try {
+            Path tlsCaPath = Paths.get(tlsCertPath);
+            if (Files.exists(tlsCaPath)) {
+                return Grpc.newChannelBuilder(peerEndpoint, TlsChannelCredentials.newBuilder().trustManager(tlsCaPath.toFile()).build())
+                        .overrideAuthority(overrideAuth)
+                        .keepAliveTime(30, TimeUnit.SECONDS)
+                        .keepAliveTimeout(5, TimeUnit.SECONDS)
+                        .build();
+            } else {
+                return Grpc.newChannelBuilder(peerEndpoint, InsecureChannelCredentials.create())
+                        .keepAliveTime(30, TimeUnit.SECONDS)
+                        .keepAliveTimeout(5, TimeUnit.SECONDS)
+                        .build();
+            }
+        } catch (Exception e) {
+            log.warn("[FABRIC_CHANNEL_CONFIG]: WARN - Failed to initialize gRPC channel: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    @Bean
+    public Gateway fabricGateway(ManagedChannel fabricChannel) {
+        log.debug("[FABRIC_GATEWAY_CONFIG]: DEBUG - Initializing Fabric Gateway with ManagedChannel");
+        if (fabricChannel == null) {
+            log.warn("[FABRIC_GATEWAY_CONFIG]: WARN - ManagedChannel is null, skipping Gateway init.");
+            return null;
+        }
+
         try {
             Path certPath = Paths.get(cryptoPath, "peerOrganizations/org1.example.com/users/User1@org1.example.com/msp/signcerts/User1@org1.example.com-cert.pem");
             Path keyDirPath = Paths.get(cryptoPath, "peerOrganizations/org1.example.com/users/User1@org1.example.com/msp/keystore");
-            Path tlsCaPath = Paths.get(tlsCertPath);
 
             if (!Files.exists(certPath)) {
                 log.warn("[FABRIC_GATEWAY_CONFIG]: WARN - MSP sign certificate not found at {}. Running in simulation mode.", certPath);
@@ -74,21 +101,10 @@ public class FabricGatewayConfig {
             Identity identity = new X509Identity(mspId, certificate);
             Signer signer = Signers.newPrivateKeySigner(privateKey);
 
-            // Channel Credentials (TLS when certificate exists, fallback insecure)
-            ManagedChannel channel;
-            if (Files.exists(tlsCaPath)) {
-                channel = Grpc.newChannelBuilder(peerEndpoint, TlsChannelCredentials.newBuilder().trustManager(tlsCaPath.toFile()).build())
-                        .overrideAuthority(overrideAuth)
-                        .build();
-            } else {
-                channel = Grpc.newChannelBuilder(peerEndpoint, InsecureChannelCredentials.create())
-                        .build();
-            }
-
             Gateway gateway = Gateway.newInstance()
                     .identity(identity)
                     .signer(signer)
-                    .connection(channel)
+                    .connection(fabricChannel)
                     .evaluateOptions(callOptions -> callOptions.withDeadlineAfter(5, TimeUnit.SECONDS))
                     .endorseOptions(callOptions -> callOptions.withDeadlineAfter(15, TimeUnit.SECONDS))
                     .submitOptions(callOptions -> callOptions.withDeadlineAfter(15, TimeUnit.SECONDS))

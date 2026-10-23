@@ -30,6 +30,12 @@ public class FabricGatewayService {
     @Autowired(required = false)
     private Gateway fabricGateway;
 
+    @Autowired(required = false)
+    private io.grpc.ManagedChannel fabricChannel;
+
+    @Value("${fabric.peer-endpoint:localhost:7051}")
+    private String peerEndpoint;
+
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     // In-memory fallback state when Fabric peer is offline
@@ -355,6 +361,53 @@ public class FabricGatewayService {
         log.debug("[FABRIC_VALIDATE_DELEGATION]: DEBUG - No matching active delegation found for Delegatee='{}' on Module='{}'",
                 delegateeId, targetModule);
         return false;
+    }
+
+    /**
+     * Inspect realtime gRPC connectivity state to Hyperledger Fabric Peer
+     */
+    public Map<String, Object> getNetworkStatus() {
+        boolean isConnected = false;
+        String status = "DISCONNECTED";
+        String stateName = "OFFLINE";
+        String details = "Fabric Gateway not initialized or peer offline";
+
+        if (fabricChannel != null) {
+            try {
+                io.grpc.ConnectivityState state = fabricChannel.getState(true);
+                stateName = state != null ? state.name() : "UNKNOWN";
+
+                if (state == io.grpc.ConnectivityState.READY || state == io.grpc.ConnectivityState.IDLE) {
+                    if (fabricGateway != null) {
+                        isConnected = true;
+                        status = "CONNECTED";
+                        details = "gRPC channel active (State: " + stateName + ")";
+                    } else {
+                        status = "DEGRADED";
+                        details = "gRPC channel is ready but Gateway credentials/certs not loaded";
+                    }
+                } else if (state == io.grpc.ConnectivityState.TRANSIENT_FAILURE) {
+                    status = "DISCONNECTED";
+                    details = "gRPC connection failure - peer unreachable or down";
+                } else {
+                    status = stateName;
+                    details = "gRPC channel state: " + stateName;
+                }
+            } catch (Exception e) {
+                details = "Error inspecting gRPC state: " + e.getMessage();
+            }
+        }
+
+        Map<String, Object> res = new HashMap<>();
+        res.put("connected", isConnected);
+        res.put("status", status);
+        res.put("stateName", stateName);
+        res.put("channel", channelName);
+        res.put("chaincode", contractName);
+        res.put("peerEndpoint", peerEndpoint);
+        res.put("timestamp", Instant.now().toString());
+        res.put("details", details);
+        return res;
     }
 }
 
