@@ -27,6 +27,12 @@ public class DelegationAuditEntity {
     @Column(name = "delegation_id", length = 100, nullable = false)
     private String delegationId;
 
+    @Column(name = "parent_delegation_id", length = 100)
+    private String parentDelegationId;
+
+    @Column(name = "depth")
+    private Integer depth;
+
     @Column(name = "delegator_id", length = 50, nullable = false)
     private String delegatorId;
 

@@ -105,6 +105,7 @@ public class FabricGatewayService {
         // Fallback State
         Map<String, Object> payload = new HashMap<>();
         payload.put("delegationId", delegationId);
+        payload.put("parentDelegationId", "");
         payload.put("delegatorId", delegatorId);
         payload.put("delegateeId", delegateeId);
         payload.put("resourceId", resourceId);
@@ -128,6 +129,101 @@ public class FabricGatewayService {
         hist.add(entry);
 
         log.info("[FABRIC_CREATE_DELEGATION]: SUCCESS - Delegation ID='{}' recorded in fallback ledger state (TxId='{}')",
+                delegationId, txId);
+        return payload;
+    }
+
+    /**
+     * Submit createSubDelegation transaction to Fabric Smart Contract
+     */
+    public Map<String, Object> createSubDelegation(
+            String delegationId,
+            String parentDelegationId,
+            String delegatorId,
+            String delegateeId,
+            String resourceId,
+            String permission,
+            String validFrom,
+            String validUntil) {
+
+        log.debug("[FABRIC_CREATE_SUB_DELEGATION]: DEBUG - Preparing sub-delegation submission: ID='{}', ParentID='{}', Delegator='{}', Delegatee='{}', Resource='{}', Perm='{}'",
+                delegationId, parentDelegationId, delegatorId, delegateeId, resourceId, permission);
+
+        Contract contract = getContract();
+        String txId = "tx-fab-sub-" + UUID.randomUUID().toString().replace("-", "").substring(0, 16);
+
+        if (contract != null) {
+            try {
+                byte[] resultBytes = contract.submitTransaction(
+                        "createSubDelegation",
+                        delegationId,
+                        parentDelegationId,
+                        delegatorId,
+                        delegateeId,
+                        resourceId,
+                        permission,
+                        validFrom,
+                        validUntil
+                );
+                String resultStr = new String(resultBytes, StandardCharsets.UTF_8);
+                log.info("[FABRIC_CREATE_SUB_DELEGATION]: SUCCESS - Sub-delegation committed to Fabric Ledger (World State): ID='{}', Response={}",
+                        delegationId, resultStr);
+
+                Map<String, Object> resMap = objectMapper.readValue(resultStr, Map.class);
+                resMap.put("txId", txId);
+                return resMap;
+            } catch (Exception e) {
+                log.error("[FABRIC_CREATE_SUB_DELEGATION]: FAILED - Commit failed to Fabric peer: {}. Falling back to simulation state",
+                        e.getMessage(), e);
+                throw new RuntimeException("Fabric Sub-delegation commit failed: " + e.getMessage(), e);
+            }
+        } else {
+            log.warn("[FABRIC_CREATE_SUB_DELEGATION]: WARN - Fabric Gateway offline/null. Using simulated World State");
+        }
+
+        // Fallback State
+        Map<String, Object> parent = simulatedWorldState.get(parentDelegationId);
+        int parentDepth = 0;
+        int maxDepth = 2;
+        if (parent != null) {
+            if (parent.get("depth") instanceof Number) {
+                parentDepth = ((Number) parent.get("depth")).intValue();
+            }
+            if (parent.get("maxDepth") instanceof Number) {
+                maxDepth = ((Number) parent.get("maxDepth")).intValue();
+            }
+        }
+        int nextDepth = parentDepth + 1;
+        if (nextDepth >= maxDepth) {
+            throw new RuntimeException("Batas kedalaman pendelegasian (maxDepth=" + maxDepth + ") telah tercapai! Tidak dapat mendelegasikan lebih lanjut.");
+        }
+
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("delegationId", delegationId);
+        payload.put("parentDelegationId", parentDelegationId);
+        payload.put("delegatorId", delegatorId);
+        payload.put("delegateeId", delegateeId);
+        payload.put("resourceId", resourceId);
+        payload.put("permission", permission);
+        payload.put("validFrom", validFrom);
+        payload.put("validUntil", validUntil);
+        payload.put("maxDepth", maxDepth);
+        payload.put("depth", nextDepth);
+        payload.put("status", "ACTIVE");
+        payload.put("createdAt", Instant.now().toString());
+        payload.put("txId", txId);
+
+        simulatedWorldState.put(delegationId, payload);
+
+        List<Map<String, Object>> hist = simulatedHistory.computeIfAbsent(delegationId, k -> new ArrayList<>());
+        Map<String, Object> entry = new HashMap<>();
+        entry.put("txId", txId);
+        entry.put("timestamp", Instant.now().toString());
+        entry.put("action", "GRANT_SUB");
+        entry.put("value", payload);
+        hist.add(entry);
+
+        log.info("[FABRIC_CREATE_SUB_DELEGATION]: SUCCESS - Sub-delegation ID='{}' recorded in fallback ledger state (TxId='{}')",
                 delegationId, txId);
         return payload;
     }
@@ -166,6 +262,13 @@ public class FabricGatewayService {
             entry.put("action", "REVOKE");
             entry.put("value", payload);
             hist.add(entry);
+
+            // Cascading Revocation in fallback state
+            for (Map<String, Object> child : simulatedWorldState.values()) {
+                if (delegationId.equals(child.get("parentDelegationId"))) {
+                    child.put("status", "REVOKED");
+                }
+            }
 
             log.info("[FABRIC_REVOKE_DELEGATION]: SUCCESS - Delegation ID='{}' status set to REVOKED in fallback state", delegationId);
             return true;
@@ -228,8 +331,8 @@ public class FabricGatewayService {
         }
 
         Instant now = Instant.now();
-        Instant from = Instant.parse((String) d.get("validFrom"));
-        Instant until = Instant.parse((String) d.get("validUntil"));
+        Instant from = parseInstant((String) d.get("validFrom"));
+        Instant until = parseInstant((String) d.get("validUntil"));
 
         if (now.isBefore(from)) {
             log.warn("[FABRIC_CHECK_ACCESS]: WARN - Evaluation DENIED: Validity window not started yet (from: {})", from);
@@ -238,6 +341,25 @@ public class FabricGatewayService {
         if (now.isAfter(until)) {
             log.warn("[FABRIC_CHECK_ACCESS]: WARN - Evaluation DENIED: Validity window expired (until: {})", until);
             return "DENIED: expired";
+        }
+
+        // Cascading check for sub-delegation
+        String parentDelegationId = (String) d.get("parentDelegationId");
+        if (parentDelegationId != null && !parentDelegationId.trim().isEmpty()) {
+            Map<String, Object> parent = simulatedWorldState.get(parentDelegationId);
+            if (parent == null) {
+                log.warn("[FABRIC_CHECK_ACCESS]: WARN - Evaluation DENIED: Parent delegation '{}' not found", parentDelegationId);
+                return "DENIED: delegasi induk tidak ditemukan";
+            }
+            if (!"ACTIVE".equals(parent.get("status"))) {
+                log.warn("[FABRIC_CHECK_ACCESS]: WARN - Evaluation DENIED: Parent delegation status is '{}'", parent.get("status"));
+                return "DENIED: delegasi induk tidak aktif (" + parent.get("status") + ")";
+            }
+            Instant parentUntil = parseInstant((String) parent.get("validUntil"));
+            if (now.isAfter(parentUntil)) {
+                log.warn("[FABRIC_CHECK_ACCESS]: WARN - Evaluation DENIED: Parent delegation expired (until: {})", parentUntil);
+                return "DENIED: delegasi induk telah kedaluwarsa";
+            }
         }
 
         log.info("[FABRIC_CHECK_ACCESS]: SUCCESS - Local evaluation GRANTED for Delegatee='{}' on Resource='{}'",

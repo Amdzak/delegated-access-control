@@ -15,12 +15,15 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
@@ -52,61 +55,129 @@ public class DelegationService {
                 throw new UnauthorizedDelegationException("Delegator and Delegatee cannot be the same user");
             }
 
-            // 2. Validate Delegator Original Privilege (Backend Policy Engine - Prevent Unauthorized Delegation)
-            if (delegator.getRoleId() != 1) {
-                boolean delegatorHasPerm = rolePrivilegeRepository.existsByRoleIdAndPermIdAndIsGrantedTrue(
-                        delegator.getRoleId(), request.getPermId()
-                );
-
-                if (!delegatorHasPerm) {
-                    log.warn("[DELEGATION_SERVICE_CREATE]: WARN - Privilege escalation attempt! Delegator '{}' ({}) attempted to delegate PermId={} without holding it",
-                            delegator.getUserId(), delegator.getRoleName(), request.getPermId());
-                    throw new UnauthorizedDelegationException(
-                            "Authorization Violation: You do not possess granted authority for this module/permission."
-                    );
-                }
-            }
-
-            // 3. Validate Time Range
+            // 2. Validate Time Range
             if (!request.getValidUntil().isAfter(request.getValidFrom())) {
                 log.warn("[DELEGATION_SERVICE_CREATE]: WARN - Invalid time range: validFrom='{}', validUntil='{}'",
                         request.getValidFrom(), request.getValidUntil());
                 throw new IllegalArgumentException("Invalid time range: validUntil must be after validFrom");
             }
 
-            // 4. Generate Unique Delegation ID (Format: DEL-YYYYMMDD-XXXXXXXX)
+            String parentId = request.getParentDelegationId();
+            boolean isSubDelegation = (parentId != null && !parentId.trim().isEmpty());
+
+            int depth = 0;
+            int maxDepth = request.getMaxDepth() != null ? request.getMaxDepth() : 2;
+
+            if (isSubDelegation) {
+                // SUB-DELEGATION BRANCH
+                log.debug("[DELEGATION_SERVICE_CREATE]: DEBUG - Validating parent delegation '{}' for sub-delegation", parentId);
+                Map<String, Object> parent = fabricGatewayService.readDelegation(parentId);
+                if (parent == null) {
+                    log.warn("[DELEGATION_SERVICE_CREATE]: WARN - Parent delegation '{}' not found", parentId);
+                    throw new ResourceNotFoundException("Delegasi induk dengan ID " + parentId + " tidak ditemukan.");
+                }
+
+                String parentStatus = (String) parent.getOrDefault("status", "");
+                if (!"ACTIVE".equalsIgnoreCase(parentStatus)) {
+                    log.warn("[DELEGATION_SERVICE_CREATE]: WARN - Parent delegation '{}' is not ACTIVE: status={}", parentId, parentStatus);
+                    throw new UnauthorizedDelegationException("Delegasi induk tidak berstatus aktif: " + parentStatus);
+                }
+
+                String parentDelegateeId = (String) parent.get("delegateeId");
+                if (!delegator.getUserId().equalsIgnoreCase(parentDelegateeId)) {
+                    log.warn("[DELEGATION_SERVICE_CREATE]: WARN - Sub-delegation attempted by user '{}', but parent delegatee is '{}'",
+                            delegator.getUserId(), parentDelegateeId);
+                    throw new UnauthorizedDelegationException("Hanya penerima tugas sah (" + parentDelegateeId + ") yang dapat melimpahkan sub-delegasi ini.");
+                }
+
+                int parentDepth = parent.get("depth") instanceof Number ? ((Number) parent.get("depth")).intValue() : 0;
+                int parentMaxDepth = parent.get("maxDepth") instanceof Number ? ((Number) parent.get("maxDepth")).intValue() : 2;
+                maxDepth = parentMaxDepth;
+                depth = parentDepth + 1;
+
+                if (depth >= maxDepth) {
+                    log.warn("[DELEGATION_SERVICE_CREATE]: WARN - Max delegation depth exceeded! NextDepth={}, MaxDepth={}", depth, maxDepth);
+                    throw new UnauthorizedDelegationException("Batas kedalaman pendelegasian (maxDepth=" + maxDepth + ") telah tercapai! Tidak dapat mendelegasikan lebih lanjut.");
+                }
+
+                Instant parentUntil = parseInstant((String) parent.get("validUntil"));
+                Instant childUntil = request.getValidUntil().atZone(java.time.ZoneId.systemDefault()).toInstant();
+                if (childUntil.isAfter(parentUntil)) {
+                    log.warn("[DELEGATION_SERVICE_CREATE]: WARN - Sub-delegation validUntil '{}' exceeds parent validUntil '{}'", childUntil, parentUntil);
+                    throw new IllegalArgumentException("Masa berlaku sub-delegasi tidak boleh melebihi batas waktu delegasi induk (" + parent.get("validUntil") + ").");
+                }
+
+                String parentResource = (String) parent.get("resourceId");
+                if (parentResource != null && !parentResource.equalsIgnoreCase(request.getTargetModule())) {
+                    log.warn("[DELEGATION_SERVICE_CREATE]: WARN - Sub-delegation module '{}' does not match parent module '{}'",
+                            request.getTargetModule(), parentResource);
+                    throw new IllegalArgumentException("Modul target sub-delegasi (" + request.getTargetModule() + ") harus sesuai dengan delegasi induk (" + parentResource + ").");
+                }
+            } else {
+                // ROOT DELEGATION BRANCH - Validate Delegator Original Privilege (SQL Server Policy Engine)
+                if (delegator.getRoleId() != 1) {
+                    boolean delegatorHasPerm = rolePrivilegeRepository.existsByRoleIdAndPermIdAndIsGrantedTrue(
+                            delegator.getRoleId(), request.getPermId()
+                    );
+
+                    if (!delegatorHasPerm) {
+                        log.warn("[DELEGATION_SERVICE_CREATE]: WARN - Privilege escalation attempt! Delegator '{}' ({}) attempted to delegate PermId={} without holding it",
+                                delegator.getUserId(), delegator.getRoleName(), request.getPermId());
+                        throw new UnauthorizedDelegationException(
+                                "Authorization Violation: You do not possess granted authority for this module/permission."
+                        );
+                    }
+                }
+            }
+
+            // 3. Generate Unique Delegation ID (Format: DEL-YYYYMMDD-XXXXXXXX)
             String datePrefix = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd"));
             String randomSuffix = UUID.randomUUID().toString().replace("-", "").substring(0, 8).toUpperCase();
             String delegationId = "DEL-" + datePrefix + "-" + randomSuffix;
 
-            int maxDepth = request.getMaxDepth() != null ? request.getMaxDepth() : 2;
             String validFromStr = request.getValidFrom().atZone(java.time.ZoneId.systemDefault()).toInstant().toString();
             String validUntilStr = request.getValidUntil().atZone(java.time.ZoneId.systemDefault()).toInstant().toString();
 
-            log.debug("[DELEGATION_SERVICE_CREATE]: DEBUG - Generated Delegation ID: '{}', MaxDepth={}", delegationId, maxDepth);
+            log.debug("[DELEGATION_SERVICE_CREATE]: DEBUG - Generated Delegation ID: '{}', Depth={}, MaxDepth={}", delegationId, depth, maxDepth);
 
-            // 5. Submit Transaction to Hyperledger Fabric Smart Contract (World State / Permission Registry)
-            Map<String, Object> ledgerResult = fabricGatewayService.createDelegation(
-                    delegationId,
-                    delegator.getUserId(),
-                    delegatee.getUserId(),
-                    request.getTargetModule(),
-                    request.getPermission(),
-                    validFromStr,
-                    validUntilStr,
-                    maxDepth
-            );
+            // 4. Submit Transaction to Hyperledger Fabric Smart Contract
+            Map<String, Object> ledgerResult;
+            if (isSubDelegation) {
+                ledgerResult = fabricGatewayService.createSubDelegation(
+                        delegationId,
+                        parentId,
+                        delegator.getUserId(),
+                        delegatee.getUserId(),
+                        request.getTargetModule(),
+                        request.getPermission(),
+                        validFromStr,
+                        validUntilStr
+                );
+            } else {
+                ledgerResult = fabricGatewayService.createDelegation(
+                        delegationId,
+                        delegator.getUserId(),
+                        delegatee.getUserId(),
+                        request.getTargetModule(),
+                        request.getPermission(),
+                        validFromStr,
+                        validUntilStr,
+                        maxDepth
+                );
+            }
 
             String txId = (String) ledgerResult.getOrDefault("txId", "tx-" + UUID.randomUUID());
 
-            // 6. Record Relational Audit Log to MSSQL Database
+            // 5. Record Relational Audit Log to MSSQL Database
             DelegationAuditEntity auditLog = DelegationAuditEntity.builder()
                     .delegationId(delegationId)
+                    .parentDelegationId(isSubDelegation ? parentId : null)
+                    .depth(depth)
                     .delegatorId(delegator.getUserId())
                     .delegateeId(delegatee.getUserId())
                     .targetModule(request.getTargetModule())
                     .permId(request.getPermId())
-                    .actionType("GRANT")
+                    .actionType(isSubDelegation ? "GRANT_SUB" : "GRANT")
                     .txId(txId)
                     .justification(request.getJustification())
                     .validFrom(request.getValidFrom())
@@ -116,11 +187,12 @@ public class DelegationService {
 
             auditRepository.save(auditLog);
 
-            log.info("[DELEGATION_SERVICE_CREATE]: SUCCESS - Delegation created: ID='{}', Delegator='{}', Delegatee='{}', Module='{}', TxId='{}'",
-                    delegationId, delegator.getUsername(), delegatee.getUsername(), request.getTargetModule(), txId);
+            log.info("[DELEGATION_SERVICE_CREATE]: SUCCESS - Delegation created: ID='{}', Depth={}, Parent='{}', Delegator='{}', Delegatee='{}', Module='{}', TxId='{}'",
+                    delegationId, depth, (isSubDelegation ? parentId : "NONE"), delegator.getUsername(), delegatee.getUsername(), request.getTargetModule(), txId);
 
             return DelegationResponse.builder()
                     .delegationId(delegationId)
+                    .parentDelegationId(isSubDelegation ? parentId : null)
                     .delegatorId(delegator.getUserId())
                     .delegatorName(delegator.getFullName())
                     .delegateeId(delegatee.getUserId())
@@ -134,7 +206,7 @@ public class DelegationService {
                     .validFrom(request.getValidFrom())
                     .validUntil(request.getValidUntil())
                     .createdAt(LocalDateTime.now())
-                    .depth(0)
+                    .depth(depth)
                     .maxDepth(maxDepth)
                     .build();
         } catch (Exception ex) {
@@ -185,6 +257,37 @@ public class DelegationService {
 
             auditRepository.save(revokeLog);
 
+            // 3. Cascading Revocation: Revoke any child sub-delegations
+            List<DelegationAuditEntity> childLogs = auditRepository.findByParentDelegationId(delegationId);
+            Set<String> processedChildren = new HashSet<>();
+            for (DelegationAuditEntity childLog : childLogs) {
+                String childDelId = childLog.getDelegationId();
+                if (processedChildren.add(childDelId)) {
+                    try {
+                        fabricGatewayService.revokeDelegation(childDelId);
+                        DelegationAuditEntity childRevokeLog = DelegationAuditEntity.builder()
+                                .delegationId(childDelId)
+                                .parentDelegationId(delegationId)
+                                .depth(childLog.getDepth())
+                                .delegatorId(childLog.getDelegatorId())
+                                .delegateeId(childLog.getDelegateeId())
+                                .targetModule(childLog.getTargetModule())
+                                .permId(childLog.getPermId())
+                                .actionType("REVOKE")
+                                .txId("tx-rev-cascading-" + UUID.randomUUID().toString().replace("-", "").substring(0, 12))
+                                .justification("Dicabut otomatis secara berantai (Cascading Revocation) karena delegasi induk (" + delegationId + ") dicabut oleh " + principal.getFullName())
+                                .validFrom(childLog.getValidFrom())
+                                .validUntil(childLog.getValidUntil())
+                                .createdAt(LocalDateTime.now())
+                                .build();
+                        auditRepository.save(childRevokeLog);
+                        log.info("[DELEGATION_SERVICE_REVOKE]: SUCCESS - Child delegation '{}' cascade-revoked", childDelId);
+                    } catch (Exception childEx) {
+                        log.warn("[DELEGATION_SERVICE_REVOKE]: WARN - Failed to cascade-revoke child '{}': {}", childDelId, childEx.getMessage());
+                    }
+                }
+            }
+
             log.info("[DELEGATION_SERVICE_REVOKE]: SUCCESS - Delegation ID '{}' revoked by '{}', RevokeTxId='{}'",
                     delegationId, principal.getUsername(), revokeTxId);
         } catch (Exception ex) {
@@ -228,10 +331,14 @@ public class DelegationService {
 
         Map<String, DelegationResponse> responseMap = new LinkedHashMap<>();
 
-        // 1. Gather all audit logs where user is Delegator or Delegatee
+        // 1. Gather audit logs: for Admin load all delegations, for staff load where user is Delegator or Delegatee
         List<DelegationAuditEntity> myLogs = new ArrayList<>();
-        myLogs.addAll(auditRepository.findByDelegatorIdOrderByCreatedAtDesc(userId));
-        myLogs.addAll(auditRepository.findByDelegateeIdOrderByCreatedAtDesc(userId));
+        if (principal.getRoleId() != null && (principal.getRoleId() == 1 || "Admin".equalsIgnoreCase(principal.getRoleName()))) {
+            myLogs.addAll(auditRepository.findAllByOrderByCreatedAtDesc());
+        } else {
+            myLogs.addAll(auditRepository.findByDelegatorIdOrderByCreatedAtDesc(userId));
+            myLogs.addAll(auditRepository.findByDelegateeIdOrderByCreatedAtDesc(userId));
+        }
 
         // Group audit logs by delegationId preserving recent order
         Map<String, List<DelegationAuditEntity>> logsByDelId = myLogs.stream()
@@ -251,8 +358,9 @@ public class DelegationService {
             LocalDateTime validFrom = latestLog.getValidFrom();
             LocalDateTime validUntil = latestLog.getValidUntil();
             LocalDateTime createdAt = latestLog.getCreatedAt();
-            Integer depth = 0;
+            Integer depth = latestLog.getDepth() != null ? latestLog.getDepth() : 0;
             Integer maxDepth = 2;
+            String parentDelegationId = latestLog.getParentDelegationId();
             String delegatorId = latestLog.getDelegatorId();
             String delegateeId = latestLog.getDelegateeId();
 
@@ -279,6 +387,9 @@ public class DelegationService {
                 if (fabricState.get("maxDepth") instanceof Number) {
                     maxDepth = ((Number) fabricState.get("maxDepth")).intValue();
                 }
+                if (fabricState.get("parentDelegationId") != null) {
+                    parentDelegationId = (String) fabricState.get("parentDelegationId");
+                }
                 if (fabricState.get("delegatorId") != null) {
                     delegatorId = (String) fabricState.get("delegatorId");
                 }
@@ -294,6 +405,21 @@ public class DelegationService {
                 status = "EXPIRED";
             }
 
+            // Cascading Revocation Check: If parent is revoked or expired, sub-delegation status cascades to REVOKED / EXPIRED
+            if ("ACTIVE".equalsIgnoreCase(status) && parentDelegationId != null && !parentDelegationId.trim().isEmpty()) {
+                Map<String, Object> parentFabric = fabricGatewayService.readDelegation(parentDelegationId);
+                String parentStatus = parentFabric != null ? (String) parentFabric.get("status") : null;
+                if (parentStatus == null) {
+                    List<DelegationAuditEntity> pLogs = auditRepository.findByDelegationIdOrderByCreatedAtDesc(parentDelegationId);
+                    if (!pLogs.isEmpty()) {
+                        parentStatus = "REVOKE".equalsIgnoreCase(pLogs.get(0).getActionType()) ? "REVOKED" : "ACTIVE";
+                    }
+                }
+                if ("REVOKED".equalsIgnoreCase(parentStatus)) {
+                    status = "REVOKED";
+                }
+            }
+
             String delegatorName = userRepository.findByUserId(delegatorId)
                     .map(UserEntity::getFullName)
                     .orElse(delegatorId);
@@ -304,6 +430,7 @@ public class DelegationService {
 
             DelegationResponse resp = DelegationResponse.builder()
                     .delegationId(delegationId)
+                    .parentDelegationId(parentDelegationId)
                     .delegatorId(delegatorId)
                     .delegatorName(delegatorName)
                     .delegateeId(delegateeId)
@@ -361,6 +488,7 @@ public class DelegationService {
 
                 Integer depth = d.get("depth") instanceof Number ? ((Number) d.get("depth")).intValue() : 0;
                 Integer maxDepth = d.get("maxDepth") instanceof Number ? ((Number) d.get("maxDepth")).intValue() : 2;
+                String parentDelegationId = (String) d.get("parentDelegationId");
 
                 Integer permId = auditRepository.findByDelegationIdOrderByCreatedAtDesc(delegationId)
                         .stream()
@@ -373,8 +501,24 @@ public class DelegationService {
                     status = "EXPIRED";
                 }
 
+                // Cascading Revocation Check: If parent is revoked, sub-delegation status cascades to REVOKED
+                if ("ACTIVE".equalsIgnoreCase(status) && parentDelegationId != null && !parentDelegationId.trim().isEmpty()) {
+                    Map<String, Object> parentFabric = fabricGatewayService.readDelegation(parentDelegationId);
+                    String parentStatus = parentFabric != null ? (String) parentFabric.get("status") : null;
+                    if (parentStatus == null) {
+                        List<DelegationAuditEntity> pLogs = auditRepository.findByDelegationIdOrderByCreatedAtDesc(parentDelegationId);
+                        if (!pLogs.isEmpty()) {
+                            parentStatus = "REVOKE".equalsIgnoreCase(pLogs.get(0).getActionType()) ? "REVOKED" : "ACTIVE";
+                        }
+                    }
+                    if ("REVOKED".equalsIgnoreCase(parentStatus)) {
+                        status = "REVOKED";
+                    }
+                }
+
                 DelegationResponse resp = DelegationResponse.builder()
                         .delegationId(delegationId)
+                        .parentDelegationId(parentDelegationId)
                         .delegatorId(delegatorId)
                         .delegatorName(delegatorName)
                         .delegateeId(delegateeId)
@@ -400,6 +544,23 @@ public class DelegationService {
             log.error("[DELEGATION_SERVICE_BY_DELEGATEE]: FAILED - Failed to fetch delegations for delegatee '{}': {}",
                     delegateeId, ex.getMessage(), ex);
             throw ex;
+        }
+    }
+
+    private Instant parseInstant(String str) {
+        if (str == null || str.trim().isEmpty()) {
+            return Instant.now();
+        }
+        try {
+            return Instant.parse(str);
+        } catch (Exception e) {
+            try {
+                String clean = str.replace("Z", "");
+                if (clean.length() == 16) clean += ":00";
+                return LocalDateTime.parse(clean).atZone(java.time.ZoneId.systemDefault()).toInstant();
+            } catch (Exception ex) {
+                return Instant.now();
+            }
         }
     }
 

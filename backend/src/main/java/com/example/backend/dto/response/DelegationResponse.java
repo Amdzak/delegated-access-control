@@ -36,4 +36,5 @@ public class DelegationResponse {
 
     private Integer depth;
     private Integer maxDepth;
+    private String parentDelegationId;
 }
