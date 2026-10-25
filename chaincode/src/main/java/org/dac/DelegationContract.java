@@ -31,10 +31,13 @@ public final class DelegationContract implements ContractInterface {
         INVALID_TIME_RANGE,
         INVALID_DELEGATEE,
         NOT_ACTIVE,
-        SAME_USER
+        SAME_USER,
+        MAX_DEPTH_EXCEEDED,
+        RESOURCE_MISMATCH,
+        PARENT_DELEGATION_NOT_FOUND
     }
 
-    // Create Delegation
+    // Create Root Delegation (Depth 0)
     @Transaction
     public Delegation createDelegation(
             final Context ctx,
@@ -46,6 +49,108 @@ public final class DelegationContract implements ContractInterface {
             final String validFrom,
             final String validUntil,
             final int maxDepth) {
+        return internalCreateDelegation(
+                ctx,
+                delegationId,
+                "", // No parent (Root delegation)
+                delegatorId,
+                delegateeId,
+                resourceId,
+                permission,
+                validFrom,
+                validUntil,
+                maxDepth,
+                0 // Root depth = 0
+                );
+    }
+
+    // Create Sub-Delegation (Re-delegation linked to parent delegation)
+    @Transaction
+    public Delegation createSubDelegation(
+            final Context ctx,
+            final String delegationId,
+            final String parentDelegationId,
+            final String delegatorId,
+            final String delegateeId,
+            final String resourceId,
+            final String permission,
+            final String validFrom,
+            final String validUntil) {
+        if (parentDelegationId == null || parentDelegationId.trim().isEmpty()) {
+            throw new ChaincodeException(
+                    "Parent delegation ID wajib diisi untuk sub-delegasi",
+                    DelegationErrors.PARENT_DELEGATION_NOT_FOUND.toString());
+        }
+
+        Delegation parent = readDelegation(ctx, parentDelegationId);
+
+        if (!parent.getStatus().equals(Delegation.Status.ACTIVE.name())) {
+            throw new ChaincodeException(
+                    "Delegasi induk tidak berstatus aktif: " + parent.getStatus(),
+                    DelegationErrors.NOT_ACTIVE.toString());
+        }
+
+        // Delegator must be the legitimate delegatee of the parent delegation
+        if (!parent.getDelegateeId().equals(delegatorId)) {
+            throw new ChaincodeException(
+                    "Sub-delegator (" + delegatorId + ") bukan penerima sah dari delegasi induk ("
+                            + parent.getDelegateeId() + ")",
+                    DelegationErrors.INVALID_DELEGATEE.toString());
+        }
+
+        // Strict Depth Enforcement: nextDepth must be less than parent.maxDepth
+        int nextDepth = parent.getDepth() + 1;
+        if (nextDepth >= parent.getMaxDepth()) {
+            throw new ChaincodeException(
+                    "Batas kedalaman pendelegasian (maxDepth=" + parent.getMaxDepth()
+                            + ") telah tercapai! Tidak dapat mendelegasikan lebih lanjut.",
+                    DelegationErrors.MAX_DEPTH_EXCEEDED.toString());
+        }
+
+        // Child expiration cannot exceed parent expiration
+        Instant parentUntil = Instant.parse(parent.getValidUntil());
+        Instant childUntil = Instant.parse(validUntil);
+        if (childUntil.isAfter(parentUntil)) {
+            throw new ChaincodeException(
+                    "Masa berlaku sub-delegasi (" + validUntil + ") melebihi batas waktu delegasi induk ("
+                            + parent.getValidUntil() + ")",
+                    DelegationErrors.INVALID_TIME_RANGE.toString());
+        }
+
+        // Monotonic attenuation: resourceId must match parent resource
+        if (!parent.getResourceId().equalsIgnoreCase(resourceId)) {
+            throw new ChaincodeException(
+                    "Sumber daya modul sub-delegasi (" + resourceId + ") harus sesuai dengan delegasi induk ("
+                            + parent.getResourceId() + ")",
+                    DelegationErrors.RESOURCE_MISMATCH.toString());
+        }
+
+        return internalCreateDelegation(
+                ctx,
+                delegationId,
+                parentDelegationId,
+                delegatorId,
+                delegateeId,
+                resourceId,
+                permission,
+                validFrom,
+                validUntil,
+                parent.getMaxDepth(),
+                nextDepth);
+    }
+
+    private Delegation internalCreateDelegation(
+            final Context ctx,
+            final String delegationId,
+            final String parentDelegationId,
+            final String delegatorId,
+            final String delegateeId,
+            final String resourceId,
+            final String permission,
+            final String validFrom,
+            final String validUntil,
+            final int maxDepth,
+            final int depth) {
         ChaincodeStub stub = ctx.getStub();
 
         // Validation exists delegation
@@ -81,6 +186,7 @@ public final class DelegationContract implements ContractInterface {
         // Bikin objek Delegation baru
         Delegation delegation = new Delegation(
                 delegationId,
+                parentDelegationId,
                 delegatorId,
                 delegateeId,
                 resourceId,
@@ -90,14 +196,14 @@ public final class DelegationContract implements ContractInterface {
                 maxDepth,
                 Delegation.Status.ACTIVE.name(),
                 createdAt,
-                0 // root delegation
-                );
+                depth);
 
         // Simpan ke ledger
         stub.putStringState(delegationId, genson.serialize(delegation));
 
         // Emit event untuk audit
-        stub.setEvent("DelegationCreated", genson.serialize(delegation).getBytes());
+        stub.setEvent(
+                "DelegationCreated", genson.serialize(delegation).getBytes(java.nio.charset.StandardCharsets.UTF_8));
 
         return delegation;
     }
@@ -134,6 +240,23 @@ public final class DelegationContract implements ContractInterface {
 
         stub.putStringState(delegationId, genson.serialize(revoked));
         stub.setEvent("DelegationRevoked", genson.serialize(revoked).getBytes());
+
+        // Cascading Revocation: Revoke all sub-delegations derived from this delegation
+        QueryResultsIterator<KeyValue> all = stub.getStateByRange("", "");
+        for (KeyValue kv : all) {
+            try {
+                Delegation child = genson.deserialize(kv.getStringValue(), Delegation.class);
+                if (delegationId.equals(child.getParentDelegationId())
+                        && child.getStatus().equals(Delegation.Status.ACTIVE.name())) {
+                    Delegation childRevoked = child.withStatus(Delegation.Status.REVOKED.name());
+                    stub.putStringState(child.getDelegationId(), genson.serialize(childRevoked));
+                    stub.setEvent(
+                            "DelegationRevoked", genson.serialize(childRevoked).getBytes());
+                }
+            } catch (Exception ignored) {
+                // skip non-delegation entries
+            }
+        }
 
         return revoked;
     }
@@ -184,6 +307,23 @@ public final class DelegationContract implements ContractInterface {
         }
         if (now.isAfter(until)) {
             return "DENIED: expired";
+        }
+
+        // Cek 6: Cascading Revocation & Parent Validity Check
+        String parentId = d.getParentDelegationId();
+        if (parentId != null && !parentId.trim().isEmpty()) {
+            try {
+                Delegation parent = readDelegation(ctx, parentId);
+                if (!parent.getStatus().equals(Delegation.Status.ACTIVE.name())) {
+                    return "DENIED: delegasi induk tidak aktif (" + parent.getStatus() + ")";
+                }
+                Instant parentUntil = Instant.parse(parent.getValidUntil());
+                if (now.isAfter(parentUntil)) {
+                    return "DENIED: delegasi induk telah kedaluwarsa";
+                }
+            } catch (ChaincodeException e) {
+                return "DENIED: delegasi induk tidak ditemukan";
+            }
         }
 
         return "GRANTED";

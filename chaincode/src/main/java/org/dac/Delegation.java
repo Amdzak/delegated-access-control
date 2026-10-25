@@ -22,6 +22,9 @@ public final class Delegation {
     private final String delegationId;
 
     @Property()
+    private final String parentDelegationId;
+
+    @Property()
     private final String delegatorId;
 
     @Property()
@@ -53,6 +56,7 @@ public final class Delegation {
 
     public Delegation(
             @JsonProperty("delegationId") final String delegationId,
+            @JsonProperty("parentDelegationId") final String parentDelegationId,
             @JsonProperty("delegatorId") final String delegatorId,
             @JsonProperty("delegateeId") final String delegateeId,
             @JsonProperty("resourceId") final String resourceId,
@@ -64,6 +68,7 @@ public final class Delegation {
             @JsonProperty("createdAt") final String createdAt,
             @JsonProperty("depth") final int depth) {
         this.delegationId = delegationId;
+        this.parentDelegationId = parentDelegationId != null ? parentDelegationId : "";
         this.delegatorId = delegatorId;
         this.delegateeId = delegateeId;
         this.resourceId = resourceId;
@@ -79,6 +84,10 @@ public final class Delegation {
     // GETTER
     public String getDelegationId() {
         return delegationId;
+    }
+
+    public String getParentDelegationId() {
+        return parentDelegationId != null ? parentDelegationId : "";
     }
 
     public String getDelegatorId() {
@@ -124,6 +133,7 @@ public final class Delegation {
     public Delegation withStatus(final String newStatus) {
         return new Delegation(
                 delegationId,
+                parentDelegationId,
                 delegatorId,
                 delegateeId,
                 resourceId,
@@ -151,6 +161,7 @@ public final class Delegation {
         return Objects.deepEquals(
                         new String[] {
                             getDelegationId(),
+                            getParentDelegationId(),
                             getDelegatorId(),
                             getDelegateeId(),
                             getResourceId(),
@@ -161,6 +172,7 @@ public final class Delegation {
                         },
                         new String[] {
                             other.getDelegationId(),
+                            other.getParentDelegationId(),
                             other.getDelegatorId(),
                             other.getDelegateeId(),
                             other.getResourceId(),
@@ -177,6 +189,7 @@ public final class Delegation {
     public int hashCode() {
         return Objects.hash(
                 getDelegationId(),
+                getParentDelegationId(),
                 getDelegatorId(),
                 getDelegateeId(),
                 getResourceId(),
@@ -190,6 +203,7 @@ public final class Delegation {
 
     @Override
     public String toString() {
-        return "Delegation{id='" + delegationId + "', status='" + status + "', delegatee='" + delegateeId + "'}";
+        return "Delegation{id='" + delegationId + "', parentId='" + parentDelegationId + "', status='" + status
+                + "', delegatee='" + delegateeId + "', depth=" + depth + "}";
     }
 }
