@@ -334,6 +334,29 @@ public class FabricGatewayService {
     }
 
     /**
+     * Read a specific delegation directly from Hyperledger Fabric Smart Contract World State
+     */
+    public Map<String, Object> readDelegation(String delegationId) {
+        log.debug("[FABRIC_READ_DELEGATION]: DEBUG - Reading delegation '{}' from Fabric Ledger", delegationId);
+
+        Contract contract = getContract();
+        if (contract != null) {
+            try {
+                byte[] resultBytes = contract.evaluateTransaction("readDelegation", delegationId);
+                String resultStr = new String(resultBytes, StandardCharsets.UTF_8);
+                Map<String, Object> delegation = objectMapper.readValue(resultStr, Map.class);
+                log.debug("[FABRIC_READ_DELEGATION]: SUCCESS - Read delegation '{}' from Fabric World State: status={}",
+                        delegationId, delegation.get("status"));
+                return delegation;
+            } catch (Exception e) {
+                log.warn("[FABRIC_READ_DELEGATION]: WARN - Failed to read delegation '{}' from Fabric: {}. Checking fallback state",
+                        delegationId, e.getMessage());
+            }
+        }
+        return simulatedWorldState.get(delegationId);
+    }
+
+    /**
      * Validate active delegation by delegateeId, targetModule, and permId
      */
     public boolean validateDelegation(String delegateeId, String targetModule, int permId) {

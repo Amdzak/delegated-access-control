@@ -18,9 +18,11 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
@@ -219,8 +221,121 @@ public class DelegationService {
         }
     }
 
+    @Transactional(readOnly = true)
     public List<DelegationResponse> getMyDelegations(UserPrincipal principal) {
-        return getDelegationsByDelegateeId(principal.getUserId());
+        String userId = principal.getUserId();
+        log.debug("[DELEGATION_SERVICE_MY]: DEBUG - Fetching delegations for user: '{}'", userId);
+
+        Map<String, DelegationResponse> responseMap = new LinkedHashMap<>();
+
+        // 1. Gather all audit logs where user is Delegator or Delegatee
+        List<DelegationAuditEntity> myLogs = new ArrayList<>();
+        myLogs.addAll(auditRepository.findByDelegatorIdOrderByCreatedAtDesc(userId));
+        myLogs.addAll(auditRepository.findByDelegateeIdOrderByCreatedAtDesc(userId));
+
+        // Group audit logs by delegationId preserving recent order
+        Map<String, List<DelegationAuditEntity>> logsByDelId = myLogs.stream()
+                .collect(Collectors.groupingBy(DelegationAuditEntity::getDelegationId, LinkedHashMap::new, Collectors.toList()));
+
+        for (Map.Entry<String, List<DelegationAuditEntity>> entry : logsByDelId.entrySet()) {
+            String delegationId = entry.getKey();
+            List<DelegationAuditEntity> logs = entry.getValue();
+            DelegationAuditEntity latestLog = logs.get(0);
+
+            // Read live state directly from Hyperledger Fabric World State
+            Map<String, Object> fabricState = fabricGatewayService.readDelegation(delegationId);
+
+            String status = "ACTIVE";
+            String targetModule = latestLog.getTargetModule();
+            String permission = "READ_WRITE";
+            LocalDateTime validFrom = latestLog.getValidFrom();
+            LocalDateTime validUntil = latestLog.getValidUntil();
+            LocalDateTime createdAt = latestLog.getCreatedAt();
+            Integer depth = 0;
+            Integer maxDepth = 2;
+            String delegatorId = latestLog.getDelegatorId();
+            String delegateeId = latestLog.getDelegateeId();
+
+            if (fabricState != null) {
+                status = (String) fabricState.getOrDefault("status", status);
+                if (fabricState.get("resourceId") != null) {
+                    targetModule = (String) fabricState.get("resourceId");
+                }
+                if (fabricState.get("permission") != null) {
+                    permission = (String) fabricState.get("permission");
+                }
+                if (fabricState.get("validFrom") != null) {
+                    validFrom = parseToLocalDateTime((String) fabricState.get("validFrom"));
+                }
+                if (fabricState.get("validUntil") != null) {
+                    validUntil = parseToLocalDateTime((String) fabricState.get("validUntil"));
+                }
+                if (fabricState.get("createdAt") != null) {
+                    createdAt = parseToLocalDateTime((String) fabricState.get("createdAt"));
+                }
+                if (fabricState.get("depth") instanceof Number) {
+                    depth = ((Number) fabricState.get("depth")).intValue();
+                }
+                if (fabricState.get("maxDepth") instanceof Number) {
+                    maxDepth = ((Number) fabricState.get("maxDepth")).intValue();
+                }
+                if (fabricState.get("delegatorId") != null) {
+                    delegatorId = (String) fabricState.get("delegatorId");
+                }
+                if (fabricState.get("delegateeId") != null) {
+                    delegateeId = (String) fabricState.get("delegateeId");
+                }
+            } else if ("REVOKE".equalsIgnoreCase(latestLog.getActionType())) {
+                status = "REVOKED";
+            }
+
+            // Check dynamic expiration against current time
+            if ("ACTIVE".equalsIgnoreCase(status) && validUntil != null && LocalDateTime.now().isAfter(validUntil)) {
+                status = "EXPIRED";
+            }
+
+            String delegatorName = userRepository.findByUserId(delegatorId)
+                    .map(UserEntity::getFullName)
+                    .orElse(delegatorId);
+
+            String delegateeName = userRepository.findByUserId(delegateeId)
+                    .map(UserEntity::getFullName)
+                    .orElse(delegateeId);
+
+            DelegationResponse resp = DelegationResponse.builder()
+                    .delegationId(delegationId)
+                    .delegatorId(delegatorId)
+                    .delegatorName(delegatorName)
+                    .delegateeId(delegateeId)
+                    .delegateeName(delegateeName)
+                    .targetModule(targetModule)
+                    .permId(latestLog.getPermId())
+                    .permission(permission)
+                    .status(status)
+                    .txId(latestLog.getTxId())
+                    .justification(latestLog.getJustification())
+                    .validFrom(validFrom)
+                    .validUntil(validUntil)
+                    .createdAt(createdAt)
+                    .depth(depth)
+                    .maxDepth(maxDepth)
+                    .build();
+
+            responseMap.put(delegationId, resp);
+        }
+
+        // 2. Also merge any incoming delegations directly from Fabric by delegatee
+        List<DelegationResponse> fabricDelegateeList = getDelegationsByDelegateeId(userId);
+        for (DelegationResponse del : fabricDelegateeList) {
+            if (!responseMap.containsKey(del.getDelegationId())) {
+                responseMap.put(del.getDelegationId(), del);
+            }
+        }
+
+        List<DelegationResponse> result = new ArrayList<>(responseMap.values());
+        log.info("[DELEGATION_SERVICE_MY]: SUCCESS - Loaded {} total delegations for user '{}'",
+                result.size(), userId);
+        return result;
     }
 
     public List<DelegationResponse> getDelegationsByDelegateeId(String delegateeId) {
@@ -253,6 +368,11 @@ public class DelegationService {
                         .findFirst()
                         .orElse(null);
 
+                String status = (String) d.get("status");
+                if ("ACTIVE".equalsIgnoreCase(status) && validUntil != null && LocalDateTime.now().isAfter(validUntil)) {
+                    status = "EXPIRED";
+                }
+
                 DelegationResponse resp = DelegationResponse.builder()
                         .delegationId(delegationId)
                         .delegatorId(delegatorId)
@@ -262,7 +382,7 @@ public class DelegationService {
                         .targetModule((String) d.get("resourceId"))
                         .permId(permId)
                         .permission((String) d.get("permission"))
-                        .status((String) d.get("status"))
+                        .status(status)
                         .validFrom(validFrom)
                         .validUntil(validUntil)
                         .createdAt(createdAt)
