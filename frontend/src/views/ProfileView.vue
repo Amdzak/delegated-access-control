@@ -14,7 +14,15 @@ const myDelegations = ref<DelegationResponse[]>([])
 const isLoadingDelegations = ref(false)
 
 const activeDelegationsCount = computed(() => {
-  return myDelegations.value.filter((d) => d.status === 'ACTIVE').length
+  const now = new Date()
+  return myDelegations.value.filter((d) => {
+    if (d.status !== 'ACTIVE') return false
+    if (d.validUntil) {
+      const until = new Date(d.validUntil.replace(' ', 'T'))
+      if (!isNaN(until.getTime()) && now > until) return false
+    }
+    return true
+  }).length
 })
 
 const totalDelegationsCount = computed(() => {
