@@ -49,8 +49,8 @@ const isRevoking = ref(false)
 
 // Form State
 const selectedDelegateeId = ref('')
-const selectedModule = ref('Logistik')
 const selectedPermId = ref<number>(2899)
+const selectedModule = ref('Master Data')
 const selectedPermission = ref('READ_WRITE')
 const validFrom = ref('')
 const validUntil = ref('')
@@ -60,6 +60,24 @@ const customHour = ref('04')
 const customMinute = ref('00')
 const justification = ref('Pendelegasian darurat penanganan pasien rawat inap')
 const maxDepth = ref(2)
+
+// Group privileges by moduleName for clean hierarchical optgroup rendering
+const groupedPrivileges = computed(() => {
+  const groups: Record<string, RolePrivilegeResponse[]> = {}
+  for (const priv of authStore.privileges) {
+    const list = groups[priv.moduleName] ?? []
+    list.push(priv)
+    groups[priv.moduleName] = list
+  }
+  return groups
+})
+
+const handlePrivilegeChange = () => {
+  const chosen = authStore.privileges.find((p) => p.permId === selectedPermId.value)
+  if (chosen) {
+    selectedModule.value = chosen.moduleName
+  }
+}
 
 const hoursList = Array.from({ length: 24 }, (_, i) => String(i).padStart(2, '0'))
 const minutesList = ['00', '05', '10', '15', '20', '25', '30', '35', '40', '45', '50', '55']
@@ -149,10 +167,32 @@ const availableDelegatees = computed(() => {
   return staffList.value.filter((u) => u.userId !== authStore.user?.userId)
 })
 
+const loadPrivileges = async () => {
+  if (!authStore.user) {
+    await authStore.fetchProfile()
+  } else if (authStore.user.roleId && authStore.privileges.length === 0) {
+    await authStore.fetchPrivileges(authStore.user.roleId)
+  }
+
+  if (authStore.privileges.length > 0) {
+    const exists = authStore.privileges.find((p) => p.permId === selectedPermId.value)
+    if (exists) {
+      selectedModule.value = exists.moduleName
+    } else {
+      const first = authStore.privileges[0]
+      if (first) {
+        selectedPermId.value = first.permId
+        selectedModule.value = first.moduleName
+      }
+    }
+  }
+}
+
 onMounted(async () => {
   setNowAsValidFrom()
   await loadStaff()
   await loadDelegations()
+  await loadPrivileges()
 })
 
 const loadStaff = async () => {
@@ -336,18 +376,33 @@ const getDelegationStatus = (del: DelegationResponse): 'ACTIVE' | 'REVOKED' | 'E
               </select>
             </div>
 
-            <!-- Target Module Selection -->
+            <!-- Target Module Selection (Dinamis dari Hak Akses Dokter - Principle of Least Privilege) -->
             <div>
-              <label class="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
-                MODUL TARGET (Resource)
-              </label>
+              <div class="flex items-center justify-between mb-1.5">
+                <label class="block text-xs font-semibold text-slate-700 uppercase tracking-wider">
+                  MODUL TARGET (Resource)
+                </label>
+                <span class="text-[10px] text-teal-700 font-semibold bg-teal-50 px-1.5 py-0.5 rounded border border-teal-200">
+                  {{ authStore.privileges.length }} Wewenang Sah
+                </span>
+              </div>
               <select
-                v-model="selectedModule"
+                v-model="selectedPermId"
+                @change="handlePrivilegeChange"
                 class="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-teal-700/20 focus:border-teal-700"
               >
-                <option value="Logistik">Logistik & Obat Darurat (Perm ID: 2899)</option>
-                <option value="Rekam Medis">Rekam Medis & E-Resep (Perm ID: 2901)</option>
-                <option value="Laboratorium">Laboratorium & Diagnostik (Perm ID: 2905)</option>
+                <optgroup
+                  v-for="(privs, moduleName) in groupedPrivileges"
+                  :key="moduleName"
+                  :label="'Modul: ' + moduleName"
+                >
+                  <option v-for="priv in privs" :key="priv.permId" :value="priv.permId">
+                    {{ priv.subPrivilegeName }} (Perm ID: {{ priv.permId }})
+                  </option>
+                </optgroup>
+                <option v-if="authStore.privileges.length === 0" disabled value="">
+                  Memuat daftar hak akses dokter...
+                </option>
               </select>
             </div>
 
@@ -541,6 +596,7 @@ const getDelegationStatus = (del: DelegationResponse): 'ACTIVE' | 'REVOKED' | 'E
                 <th class="py-2.5 px-4 whitespace-nowrap">Pemberi</th>
                 <th class="py-2.5 px-4 whitespace-nowrap">Penerima</th>
                 <th class="py-2.5 px-4 whitespace-nowrap">Modul</th>
+                <th class="py-2.5 px-4 text-center whitespace-nowrap">Tingkat</th>
                 <th class="py-2.5 px-4 whitespace-nowrap">Izin</th>
                 <th class="py-2.5 px-4 whitespace-nowrap">Waktu Mulai</th>
                 <th class="py-2.5 px-4 whitespace-nowrap">Waktu Berakhir</th>
@@ -575,6 +631,16 @@ const getDelegationStatus = (del: DelegationResponse): 'ACTIVE' | 'REVOKED' | 'E
                   <span class="inline-block px-2 py-0.5 rounded bg-slate-100 text-slate-700 font-medium text-xs">
                     {{ del.targetModule }}
                   </span>
+                </td>
+
+                <!-- Tingkat / Depth -->
+                <td class="py-3 px-4 text-center whitespace-nowrap">
+                  <span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold bg-slate-100 text-slate-800 border border-slate-200">
+                    Level {{ del.depth ?? 0 }} / {{ del.maxDepth ?? 2 }}
+                  </span>
+                  <div v-if="del.parentDelegationId" class="text-[9px] text-teal-700 truncate max-w-[110px]" :title="'Sub-delegasi dari: ' + del.parentDelegationId">
+                    Induk: {{ del.parentDelegationId }}
+                  </div>
                 </td>
 
                 <!-- Izin -->
@@ -628,7 +694,7 @@ const getDelegationStatus = (del: DelegationResponse): 'ACTIVE' | 'REVOKED' | 'E
 
                     <!-- Revoke Button (only active) -->
                     <button
-                      v-if="getDelegationStatus(del) === 'ACTIVE' && authStore.isDoctor"
+                      v-if="getDelegationStatus(del) === 'ACTIVE' && (authStore.isDoctor || authStore.user?.userId === del.delegatorId || authStore.isAdmin)"
                       @click="openRevokeConfirm(del.delegationId)"
                       class="px-2.5 py-1 text-[11px] font-medium text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded transition-colors cursor-pointer"
                       title="Cabut wewenang delegasi sekarang"
@@ -640,7 +706,7 @@ const getDelegationStatus = (del: DelegationResponse): 'ACTIVE' | 'REVOKED' | 'E
               </tr>
 
               <tr v-if="delegations.length === 0 && !isLoadingList">
-                <td colspan="9" class="py-8 text-center text-slate-400">
+                <td colspan="10" class="py-8 text-center text-slate-400">
                   Belum ada catatan pendelegasian wewenang aktif.
                 </td>
               </tr>

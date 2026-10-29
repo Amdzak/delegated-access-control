@@ -496,6 +496,21 @@ public class FabricGatewayService {
                 Instant from = parseInstant((String) d.get("validFrom"));
                 Instant until = parseInstant((String) d.get("validUntil"));
                 if (!now.isBefore(from) && !now.isAfter(until)) {
+                    // Cascading check: if sub-delegation, parent must also be ACTIVE and unexpired
+                    String parentId = (String) d.get("parentDelegationId");
+                    if (parentId != null && !parentId.trim().isEmpty()) {
+                        Map<String, Object> parent = readDelegation(parentId);
+                        if (parent == null || !"ACTIVE".equals(parent.get("status"))) {
+                            log.debug("[FABRIC_VALIDATE_DELEGATION]: Parent delegation '{}' inactive or not found, skipping", parentId);
+                            continue;
+                        }
+                        Instant parentUntil = parseInstant((String) parent.get("validUntil"));
+                        if (now.isAfter(parentUntil)) {
+                            log.debug("[FABRIC_VALIDATE_DELEGATION]: Parent delegation '{}' expired, skipping", parentId);
+                            continue;
+                        }
+                    }
+
                     log.info("[FABRIC_VALIDATE_DELEGATION]: SUCCESS - Found valid active delegation in Fabric: ID='{}' for user '{}'",
                             d.get("delegationId"), delegateeId);
                     return true;

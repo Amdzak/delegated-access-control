@@ -113,4 +113,26 @@ export const delegationApi = {
   },
 }
 
+export const testAccessApi = {
+  executeMasterDataPasien: async (body?: { patientId?: string; actionNote?: string }): Promise<ApiResponse<any>> => {
+    const response = await apiClient.post<ApiResponse<any>>('/test-access/master-data-pasien', body || {})
+    return response.data
+  },
+
+  executeLogistikPemesanan: async (body?: any): Promise<ApiResponse<any>> => {
+    const response = await apiClient.post<ApiResponse<any>>('/test-access/logistik-pemesanan', body || {})
+    return response.data
+  },
+
+  executeRawatJalan: async (body?: any): Promise<ApiResponse<any>> => {
+    const response = await apiClient.post<ApiResponse<any>>('/test-access/transaksi-rawat-jalan', body || {})
+    return response.data
+  },
+
+  executeBacaRekamMedis: async (body?: any): Promise<ApiResponse<any>> => {
+    const response = await apiClient.post<ApiResponse<any>>('/test-access/rekam-medis-baca', body || {})
+    return response.data
+  },
+}
+
 export default apiClient

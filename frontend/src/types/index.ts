@@ -75,6 +75,7 @@ export interface DelegationResponse {
   createdAt: string
   depth: number
   maxDepth: number
+  parentDelegationId?: string
 }
 
 export interface CheckAccessRequest {

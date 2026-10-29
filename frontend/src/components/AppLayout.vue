@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { useRouter, useRoute } from 'vue-router'
 import { delegationApi } from '@/services/api'
@@ -14,20 +14,40 @@ const handleLogout = () => {
   router.push({ name: 'login' })
 }
 
-const navItems = [
-  {
-    name: 'Profil',
-    route: '/profile',
-  },
-  {
-    name: 'Pendelegasian wewenang',
-    route: '/delegations',
-  },
-  {
-    name: 'Uji Akses Kontrak',
-    route: '/test-access',
-  },
-]
+const navItems = computed(() => {
+  const items = [
+    {
+      name: 'Profil',
+      route: '/profile',
+    },
+  ]
+
+  // Menu Pengujian Delegasi: Hanya untuk Admin ATAU user yang memiliki delegasi aktif dari delegator
+  if (authStore.isAdmin || authStore.hasActiveDelegation) {
+    items.push({
+      name: 'Pengujian delegasi',
+      route: '/simrs',
+    })
+  }
+
+  // Menu Pendelegasian Wewenang eksklusif hanya untuk peran Dokter
+  if (authStore.isDoctor) {
+    items.push({
+      name: 'Pendelegasian wewenang',
+      route: '/delegations',
+    })
+  }
+
+  // Menu Uji Akses Kontrak eksklusif hanya untuk peran Admin (Simulator Pengujian Smart Contract)
+  if (authStore.isAdmin) {
+    items.push({
+      name: 'Uji Akses Kontrak',
+      route: '/test-access',
+    })
+  }
+
+  return items
+})
 
 // Realtime Fabric Network Status
 const networkStatus = ref<NetworkStatusResponse | null>(null)
@@ -50,8 +70,12 @@ const checkNetworkStatus = async () => {
 
 onMounted(() => {
   checkNetworkStatus()
+  authStore.checkActiveDelegations()
   // Poll every 30 seconds for gentle, non-intrusive updates
-  statusInterval = setInterval(checkNetworkStatus, 30000)
+  statusInterval = setInterval(() => {
+    checkNetworkStatus()
+    authStore.checkActiveDelegations()
+  }, 30000)
 })
 
 onUnmounted(() => {
