@@ -13,7 +13,8 @@ public interface RolePrivilegeRepository extends JpaRepository<RolePrivilegeEnti
     
     boolean existsByRoleIdAndPermIdAndIsGrantedTrue(Integer roleId, Integer permId);
 
-    List<RolePrivilegeEntity> findByRoleIdAndIsGrantedTrue(Integer roleId);
+    @Query("SELECT rp FROM RolePrivilegeEntity rp LEFT JOIN FETCH rp.privilege p LEFT JOIN FETCH p.module WHERE rp.roleId = :roleId AND rp.isGranted = true")
+    List<RolePrivilegeEntity> findByRoleIdAndIsGrantedTrue(@Param("roleId") Integer roleId);
 
     @Query("SELECT rp.permId FROM RolePrivilegeEntity rp WHERE rp.roleId = :roleId AND rp.isGranted = true")
     List<Integer> findGrantedPermIdsByRoleId(@Param("roleId") Integer roleId);

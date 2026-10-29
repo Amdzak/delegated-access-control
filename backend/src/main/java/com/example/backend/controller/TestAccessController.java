@@ -99,4 +99,36 @@ public class TestAccessController {
             throw ex;
         }
     }
+
+    @PostMapping("/master-data-pasien")
+    @PreAuthorize("hasPermission('Master Data', 2899)")
+    @Operation(summary = "Access Test: Master Data Pasien & Pelayanan (Perm ID 2899)", description = "Original RBAC owner: Doctor/Admin. Accessible by Nurse via Fabric DAC.")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> executeMasterDataPasien(
+            @AuthenticationPrincipal UserPrincipal user,
+            @RequestBody(required = false) Map<String, Object> body) {
+        log.debug("[SIMULATION_MASTERDATA_CONTROLLER]: DEBUG - Evaluating master data access for user: '{}' (Role={})",
+                user.getUsername(), user.getRoleName());
+        try {
+            log.info("[SIMULATION_MASTERDATA_CONTROLLER]: SUCCESS - Access GRANTED for user '{}' ({}), master data patient update processed",
+                    user.getUsername(), user.getRoleName());
+            String patientId = body != null && body.containsKey("patientId") ? String.valueOf(body.get("patientId")) : "RM-2026-0042";
+            String actionNote = body != null && body.containsKey("actionNote") ? String.valueOf(body.get("actionNote")) : "Verifikasi instruksi medis & data rekam medis pasien";
+            return ResponseEntity.ok(ApiResponse.ok("ACCESS GRANTED: Tindakan & Pembaruan Data Pasien berhasil diproses!", Map.of(
+                    "executedBy", user.getFullName(),
+                    "role", user.getRoleName(),
+                    "operation", "Update Master Data Pasien",
+                    "moduleName", "Master Data",
+                    "permId", 2899,
+                    "patientId", patientId,
+                    "actionNote", actionNote,
+                    "authorizationTier", user.getRoleId() == 101 ? "Tier 1 (Static RBAC)" : "Tier 2 (Fabric Smart Contract DAC)",
+                    "timestamp", java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")),
+                    "status", "SUCCESS"
+            )));
+        } catch (Exception ex) {
+            log.error("[SIMULATION_MASTERDATA_CONTROLLER]: FAILED - Master data access denied for user '{}': {}",
+                    user.getUsername(), ex.getMessage(), ex);
+            throw ex;
+        }
+    }
 }

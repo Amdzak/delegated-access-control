@@ -11,5 +11,6 @@ public interface DelegationAuditRepository extends JpaRepository<DelegationAudit
     List<DelegationAuditEntity> findByDelegationIdOrderByCreatedAtDesc(String delegationId);
     List<DelegationAuditEntity> findByDelegatorIdOrderByCreatedAtDesc(String delegatorId);
     List<DelegationAuditEntity> findByDelegateeIdOrderByCreatedAtDesc(String delegateeId);
+    List<DelegationAuditEntity> findByParentDelegationId(String parentDelegationId);
     List<DelegationAuditEntity> findAllByOrderByCreatedAtDesc();
 }
