@@ -37,7 +37,40 @@ public class SecurityConfig {
 
     @Bean
     public PasswordEncoder passwordEncoder() {
-        return new BCryptPasswordEncoder();
+        return new PasswordEncoder() {
+            private final BCryptPasswordEncoder bcrypt = new BCryptPasswordEncoder();
+
+            @Override
+            public String encode(CharSequence rawPassword) {
+                return bcrypt.encode(rawPassword);
+            }
+
+            @Override
+            public boolean matches(CharSequence rawPassword, String encodedPassword) {
+                if (encodedPassword == null || rawPassword == null) {
+                    return false;
+                }
+                // 1. Check BCrypt
+                if (encodedPassword.startsWith("$2a$") || encodedPassword.startsWith("$2b$") || encodedPassword.startsWith("$2y$")) {
+                    return bcrypt.matches(rawPassword, encodedPassword);
+                }
+                // 2. Check MD5 (Standard format in SIMRS database)
+                try {
+                    java.security.MessageDigest md = java.security.MessageDigest.getInstance("MD5");
+                    byte[] hash = md.digest(rawPassword.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                    StringBuilder hex = new StringBuilder();
+                    for (byte b : hash) {
+                        hex.append(String.format("%02x", b));
+                    }
+                    if (hex.toString().equalsIgnoreCase(encodedPassword)) {
+                        return true;
+                    }
+                } catch (Exception ignored) {
+                }
+                // 3. Fallback plaintext comparison
+                return encodedPassword.equals(rawPassword.toString());
+            }
+        };
     }
 
     @Bean

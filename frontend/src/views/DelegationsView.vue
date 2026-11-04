@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import AppLayout from '@/components/AppLayout.vue'
@@ -49,6 +49,10 @@ const isRevoking = ref(false)
 
 // Form State
 const selectedDelegateeId = ref('')
+const searchDelegateeText = ref('')
+const isDelegateeDropdownOpen = ref(false)
+const delegateeDropdownRef = ref<HTMLElement | null>(null)
+const searchInputRef = ref<HTMLInputElement | null>(null)
 const selectedPermId = ref<number>(2899)
 const selectedModule = ref('Master Data')
 const selectedPermission = ref('READ_WRITE')
@@ -162,10 +166,57 @@ const handleDurationChange = () => {
   }
 }
 
-// Filter staff: Don't show myself
+// Filter staff: Don't show myself, only active
 const availableDelegatees = computed(() => {
-  return staffList.value.filter((u) => u.userId !== authStore.user?.userId)
+  return staffList.value.filter((u) => u.userId !== authStore.user?.userId && u.isActive !== false)
 })
+
+// Real-time search across ALL available delegatees without restrictions
+const filteredDelegatees = computed(() => {
+  const query = searchDelegateeText.value.trim().toLowerCase()
+  if (!query) {
+    return availableDelegatees.value
+  }
+  return availableDelegatees.value.filter((u) => {
+    const fullName = (u.fullName || '').toLowerCase()
+    const username = (u.username || '').toLowerCase()
+    const unit = (u.unitCabang || '').toLowerCase()
+    const role = (u.roleName || u.role?.roleName || '').toLowerCase()
+    const id = String(u.userId || '').toLowerCase()
+    return (
+      fullName.includes(query) ||
+      username.includes(query) ||
+      unit.includes(query) ||
+      role.includes(query) ||
+      id.includes(query)
+    )
+  })
+})
+
+const selectedDelegatee = computed(() => {
+  return staffList.value.find((u) => u.userId === selectedDelegateeId.value)
+})
+
+const toggleDelegateeDropdown = () => {
+  isDelegateeDropdownOpen.value = !isDelegateeDropdownOpen.value
+  if (isDelegateeDropdownOpen.value) {
+    setTimeout(() => {
+      searchInputRef.value?.focus()
+    }, 50)
+  }
+}
+
+const selectDelegatee = (user: StaffUser) => {
+  selectedDelegateeId.value = user.userId
+  searchDelegateeText.value = ''
+  isDelegateeDropdownOpen.value = false
+}
+
+const handleClickOutside = (e: MouseEvent) => {
+  if (delegateeDropdownRef.value && !delegateeDropdownRef.value.contains(e.target as Node)) {
+    isDelegateeDropdownOpen.value = false
+  }
+}
 
 const loadPrivileges = async () => {
   if (!authStore.user) {
@@ -189,10 +240,15 @@ const loadPrivileges = async () => {
 }
 
 onMounted(async () => {
+  document.addEventListener('click', handleClickOutside)
   setNowAsValidFrom()
   await loadStaff()
   await loadDelegations()
   await loadPrivileges()
+})
+
+onUnmounted(() => {
+  document.removeEventListener('click', handleClickOutside)
 })
 
 const loadStaff = async () => {
@@ -361,19 +417,116 @@ const getDelegationStatus = (del: DelegationResponse): 'ACTIVE' | 'REVOKED' | 'E
         <!-- Form Elements Grid -->
         <form @submit.prevent="handleCreateDelegation" class="space-y-4">
           <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <!-- Delegatee Selection -->
-            <div>
-              <label class="block text-xs font-semibold text-slate-700 uppercase tracking-wider mb-1.5">
-                PENERIMA HAK AKSES (Delegatee)
-              </label>
-              <select
-                v-model="selectedDelegateeId"
-                class="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg text-xs focus:ring-2 focus:ring-teal-700/20 focus:border-teal-700"
+            <!-- Delegatee Selection with Real-time Search Combobox -->
+            <div class="relative" ref="delegateeDropdownRef">
+              <div class="flex items-center justify-between mb-1.5">
+                <label class="block text-xs font-semibold text-slate-700 uppercase tracking-wider">
+                  PENERIMA HAK AKSES (Delegatee)
+                </label>
+                <span class="text-[10px] text-slate-400 font-mono">
+                  {{ availableDelegatees.length }} staf
+                </span>
+              </div>
+
+              <!-- Trigger Selector Button -->
+              <button
+                type="button"
+                @click="toggleDelegateeDropdown"
+                class="w-full flex items-center justify-between px-3 py-2 bg-slate-50 hover:bg-slate-100/70 border border-slate-300 rounded-lg text-xs text-left focus:ring-2 focus:ring-teal-700/20 focus:border-teal-700 transition-colors cursor-pointer"
+                :class="{ 'ring-2 ring-teal-700/20 border-teal-700': isDelegateeDropdownOpen }"
               >
-                <option v-for="user in availableDelegatees" :key="user.userId" :value="user.userId">
-                  {{ user.fullName }} ({{ user.role?.roleName || 'Staf Medis' }} - {{ user.userId }})
-                </option>
-              </select>
+                <div v-if="selectedDelegatee" class="flex items-center space-x-2 truncate">
+                  <span class="font-bold text-slate-800 truncate">{{ selectedDelegatee.fullName }}</span>
+                  <span class="text-[10px] px-1.5 py-0.5 rounded bg-teal-100 text-teal-800 font-medium shrink-0">
+                    {{ selectedDelegatee.unitCabang || selectedDelegatee.roleName || selectedDelegatee.role?.roleName || 'Staf' }}
+                  </span>
+                  <span class="text-[10px] text-slate-400 font-mono shrink-0">
+                    ID: {{ selectedDelegatee.userId }}
+                  </span>
+                </div>
+                <span v-else class="text-slate-400">
+                  -- Klik untuk mencari / memilih penerima --
+                </span>
+
+                <svg
+                  class="w-4 h-4 text-slate-500 ml-2 shrink-0 transition-transform duration-200"
+                  :class="{ 'rotate-180': isDelegateeDropdownOpen }"
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+                </svg>
+              </button>
+
+              <!-- Searchable Dropdown Popover Menu -->
+              <div
+                v-if="isDelegateeDropdownOpen"
+                class="absolute left-0 right-0 mt-1.5 z-40 bg-white border border-slate-200 rounded-lg shadow-xl overflow-hidden"
+              >
+                <!-- Search Input Header -->
+                <div class="p-2.5 border-b border-slate-100 bg-slate-50/80 flex items-center gap-2">
+                  <svg class="w-4 h-4 text-slate-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                  </svg>
+                  <input
+                    ref="searchInputRef"
+                    type="text"
+                    v-model="searchDelegateeText"
+                    placeholder="Ketik nama (misal: Bertua), unit (misal: IGD), atau ID..."
+                    class="w-full bg-transparent text-xs text-slate-800 placeholder:text-slate-400 focus:outline-none"
+                    @click.stop
+                  />
+                  <button
+                    v-if="searchDelegateeText"
+                    type="button"
+                    @click.stop="searchDelegateeText = ''"
+                    class="text-slate-400 hover:text-slate-600 text-xs px-1.5 py-0.5 rounded cursor-pointer"
+                  >
+                    ✕
+                  </button>
+                </div>
+
+                <!-- Scrollable Staff List -->
+                <ul class="max-h-56 overflow-y-auto divide-y divide-slate-100 text-xs">
+                  <li
+                    v-for="user in filteredDelegatees"
+                    :key="user.userId"
+                    @click="selectDelegatee(user)"
+                    :class="user.userId === selectedDelegateeId ? 'bg-teal-50 text-teal-900 font-semibold' : 'hover:bg-slate-50 text-slate-700'"
+                    class="px-3 py-2 cursor-pointer transition-colors flex items-center justify-between"
+                  >
+                    <div class="truncate mr-2">
+                      <div class="truncate text-slate-800 font-medium">
+                        {{ user.fullName }}
+                      </div>
+                      <div class="text-[10px] text-slate-400 flex items-center gap-1.5 mt-0.5">
+                        <span class="px-1 py-0.2 rounded bg-slate-100 text-slate-600 font-medium">
+                          {{ user.unitCabang || 'Unit' }}
+                        </span>
+                        <span>• {{ user.roleName || user.role?.roleName || 'Staf Medis' }}</span>
+                        <span>• ID: {{ user.userId }}</span>
+                      </div>
+                    </div>
+                    <span
+                      v-if="user.userId === selectedDelegateeId"
+                      class="text-teal-700 text-xs font-bold shrink-0"
+                    >
+                      ✓
+                    </span>
+                  </li>
+
+                  <li v-if="filteredDelegatees.length === 0" class="px-4 py-6 text-center text-xs text-slate-400">
+                    Tidak ditemukan staf dengan kata kunci "{{ searchDelegateeText }}"
+                  </li>
+                </ul>
+
+                <!-- Dropdown Footer -->
+                <div class="px-3 py-1.5 bg-slate-50 border-t border-slate-100 text-[10px] text-slate-400 flex items-center justify-between">
+                  <span>Ditemukan {{ filteredDelegatees.length }} staf</span>
+                  <span>Klik untuk memilih</span>
+                </div>
+              </div>
             </div>
 
             <!-- Target Module Selection (Dinamis dari Hak Akses Dokter - Principle of Least Privilege) -->
