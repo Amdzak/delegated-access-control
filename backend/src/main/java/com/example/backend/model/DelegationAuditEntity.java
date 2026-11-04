@@ -51,7 +51,7 @@ public class DelegationAuditEntity {
     @Column(name = "tx_id", length = 128, nullable = false)
     private String txId;
 
-    @Column(name = "justification", columnDefinition = "NVARCHAR(MAX)", nullable = false)
+    @Column(name = "justification", length = 4000, nullable = false)
     private String justification;
 
     @Column(name = "valid_from", nullable = false)

@@ -38,6 +38,7 @@ export interface StaffUser {
   username: string
   fullName: string
   roleId: number
+  roleName?: string
   unitCabang: string
   isActive: boolean
   role?: {

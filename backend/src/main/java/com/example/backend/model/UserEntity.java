@@ -1,5 +1,6 @@
 package com.example.backend.model;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.*;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -10,7 +11,7 @@ import lombok.Setter;
 import java.time.LocalDateTime;
 
 @Entity
-@Table(name = "users")
+@Table(name = "users_view")
 @Getter
 @Setter
 @Builder
@@ -25,6 +26,7 @@ public class UserEntity {
     @Column(name = "username", length = 50, nullable = false, unique = true)
     private String username;
 
+    @JsonIgnore
     @Column(name = "password_hash", length = 255, nullable = false)
     private String passwordHash;
 
